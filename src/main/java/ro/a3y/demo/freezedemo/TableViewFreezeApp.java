@@ -2,6 +2,7 @@ package ro.a3y.demo.freezedemo;
 
 import javafx.animation.AnimationTimer;
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.beans.property.*;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -28,6 +29,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *  - TableView with expensive cell factories (heavy work in updateItem)
  *  - bulk-load on FX thread
  *  => jank/freezes under load
+ * <p>
+ * GOOD:
+ *  - precompute render tokens in background
+ *  - flush to UI in batches, throttled (coalesced) on FX thread
+ *  - cheap cells: setText only
  */
 public class TableViewFreezeApp extends Application {
 
@@ -127,6 +133,9 @@ public class TableViewFreezeApp extends Application {
         Button badBtn = new Button("Load BAD (expensive cells)");
         badBtn.setOnAction(e -> loadBad(parseCount(countField.getText()), idCol, tsCol, amountCol, custCol, sumCol));
 
+        Button goodBtn = new Button("Load GOOD (precompute + batch + throttle)");
+        goodBtn.setOnAction(e -> loadGood(parseCount(countField.getText()), idCol, tsCol, amountCol, custCol, sumCol));
+
         Button clearBtn = new Button("Clear");
         clearBtn.setOnAction(e -> {
             backing.clear();
@@ -135,7 +144,7 @@ public class TableViewFreezeApp extends Application {
 
         HBox controls = new HBox(10,
                 new Label("Rows:"), countField,
-                badBtn, clearBtn,
+                badBtn, goodBtn, clearBtn,
                 progress, status
         );
         controls.setPadding(new Insets(10));
@@ -233,6 +242,94 @@ public class TableViewFreezeApp extends Application {
                 setText(s);
             }
         };
+    }
+
+    private void loadGood(int count,
+                          TableColumn<Object, String> idCol,
+                          TableColumn<Object, String> tsCol,
+                          TableColumn<Object, String> amountCol,
+                          TableColumn<Object, String> custCol,
+                          TableColumn<Object, String> sumCol) {
+
+        if (!running.compareAndSet(false, true)) return;
+
+        status.setText("Loading GOOD... (precompute + batching + throttling)");
+        progress.setVisible(true);
+        backing.clear();
+
+        idCol.setCellValueFactory(cd -> {
+            Object v = cd.getValue();
+            if (v instanceof RenderRow rr) return rr.idProperty().asString();
+            return new SimpleStringProperty("");
+        });
+        tsCol.setCellValueFactory(cd -> {
+            Object v = cd.getValue();
+            if (v instanceof RenderRow rr) return rr.tsProperty();
+            return new SimpleStringProperty("");
+        });
+        amountCol.setCellValueFactory(cd -> {
+            Object v = cd.getValue();
+            if (v instanceof RenderRow rr) return rr.amountProperty();
+            return new SimpleStringProperty("");
+        });
+        custCol.setCellValueFactory(cd -> {
+            Object v = cd.getValue();
+            if (v instanceof RenderRow rr) return rr.customerProperty();
+            return new SimpleStringProperty("");
+        });
+        sumCol.setCellValueFactory(cd -> {
+            Object v = cd.getValue();
+            if (v instanceof RenderRow rr) return rr.summaryProperty();
+            return new SimpleStringProperty("");
+        });
+
+        idCol.setCellFactory(col -> cheapCell());
+        tsCol.setCellFactory(col -> cheapCell());
+        amountCol.setCellFactory(col -> cheapCell());
+        custCol.setCellFactory(col -> cheapCell());
+        sumCol.setCellFactory(col -> cheapCell());
+
+        CompletableFuture.runAsync(() -> {
+            long t0 = System.nanoTime();
+            for (int i = 0; i < count; i++) {
+                RawRow raw = makeRawRow(i);
+                RenderRow rr = precompute(raw);
+                uiQueue.add(rr);
+
+                if ((i % 5000) == 0) {
+                    int done = i;
+                    Platform.runLater(() -> status.setText("Precomputing... " + done + " / " + count));
+                }
+            }
+            long t1 = System.nanoTime();
+            Platform.runLater(() -> status.setText("Precompute done in ~" + millis(t0, t1) + " ms; flushing..."));
+        }, pool).whenComplete((ok, ex) -> Platform.runLater(() -> {
+            if (ex != null) {
+                status.setText("Error: " + ex.getClass().getSimpleName() + " - " + ex.getMessage());
+            } else {
+                status.setText(status.getText() + " (UI should remain responsive)");
+            }
+            progress.setVisible(false);
+            running.set(false);
+        }));
+    }
+
+    private TableCell<Object, String> cheapCell() {
+        return new TableCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : item);
+            }
+        };
+    }
+
+    private RenderRow precompute(RawRow r) {
+        String ts = TS_FMT.format(Instant.ofEpochMilli(r.epochMillis));
+        String amt = MONEY_FMT.get().format(r.amount);
+        String cust = r.customer;
+        String summary = buildSummary(r.payload);
+        return new RenderRow(r.id, ts, amt, cust, summary);
     }
 
     private String buildSummary(String payload) {

@@ -30,6 +30,20 @@
         <version>0.0.8</version>
         <configuration>
           <mainClass>ro.a3y.demo.freezedemo.TableViewFreezeApp</mainClass>
+          <launcher>TableViewFreezeApp-${project.version}</launcher>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.2</version>
+        <configuration>
+          <archive>
+            <manifest>
+              <mainClass>ro.a3y.demo.freezedemo.TableViewFreezeApp</mainClass>
+            </manifest>
+          </archive>
+          <finalName>TableViewFreezeApp-${project.version}</finalName>
         </configuration>
       </plugin>
     </plugins>
